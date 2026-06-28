@@ -42,8 +42,9 @@ namespace secure_channel {
         std::vector<uint8_t> compute_shared(const std::vector<uint8_t>& peer_public, CtrDrbg& rng);
 
     private:
-    mbedtls_dhm_context ctx_;
-    bool own_key_generated_;
+        mbedtls_dhm_context  ctx_;
+        bool                 own_key_generated_;
+        std::vector<uint8_t> own_public_; // stored by make_public(), returned by get_public()
     };
 
     class GcmContext {

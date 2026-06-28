@@ -5,6 +5,15 @@
 
 namespace secure_channel {
 
+    // Prepend a 4-byte big-endian length so the receiver knows how many bytes to read.
+    static std::vector<uint8_t> frame(const std::vector<uint8_t>& msg) {
+        uint32_t len = hton(static_cast<uint32_t>(msg.size()));
+        std::vector<uint8_t> out(4);
+        memcpy(out.data(), &len, 4);
+        out.insert(out.end(), msg.begin(), msg.end());
+        return out;
+    }
+
     Handshake Handshake::create_client(CtrDrbg& rng) {
         return Handshake(false, rng);
     }
@@ -48,6 +57,10 @@ namespace secure_channel {
             auto ke_msg = socket.recv_all(len);
             parse_key_exchange(ke_msg);
 
+            // Log in canonical order: server_ke (peer) then client_ke (ours)
+            handshake_log_.insert(handshake_log_.end(), peer_ke_log_.begin(), peer_ke_log_.end());
+            handshake_log_.insert(handshake_log_.end(), our_ke_log_.begin(),  our_ke_log_.end());
+
             // 5. Derive keys
             derive_keys();
 
@@ -83,6 +96,10 @@ namespace secure_channel {
             auto ke_msg = socket.recv_all(len);
             parse_key_exchange(ke_msg);
 
+            // Log in canonical order: server_ke (ours) then client_ke (peer)
+            handshake_log_.insert(handshake_log_.end(), our_ke_log_.begin(),  our_ke_log_.end());
+            handshake_log_.insert(handshake_log_.end(), peer_ke_log_.begin(), peer_ke_log_.end());
+
             // 5. Derive keys
             derive_keys();
 
@@ -108,11 +125,9 @@ namespace secure_channel {
         } else {
             msg.insert(msg.end(), client_nonce_.begin(), client_nonce_.end());
         }
-        
-        // Append to handshake log for finished message verification
+
         handshake_log_.insert(handshake_log_.end(), msg.begin(), msg.end());
-        
-        return msg;
+        return frame(msg);
     }
 
     void Handshake::parse_hello(const std::vector<uint8_t>& msg) {
@@ -136,43 +151,34 @@ namespace secure_channel {
     }
 
     std::vector<uint8_t> Handshake::build_key_exchange() {
-        // Generate DH public key if not already done
         dh_.make_public(rng_);
         auto pub = dh_.get_public();
-        
+
         std::vector<uint8_t> msg;
-        msg.push_back(0x02); // Key exchange type
-        
-        // Prepend length of pub (2 bytes) for easier parsing
+        msg.push_back(0x02);
         uint16_t len = static_cast<uint16_t>(pub.size());
         msg.push_back((len >> 8) & 0xFF);
         msg.push_back(len & 0xFF);
         msg.insert(msg.end(), pub.begin(), pub.end());
-        
-        // Append to handshake log for finished message verification
-        handshake_log_.insert(handshake_log_.end(), msg.begin(), msg.end());
-        
-        return msg;
+
+        our_ke_log_ = msg; // store for ordered logging in perform()
+        return frame(msg);
     }
 
     void Handshake::parse_key_exchange(const std::vector<uint8_t>& msg) {
-        if (msg.empty() || msg[0] != 0x02) {
+        if (msg.empty() || msg[0] != 0x02)
             throw std::runtime_error("Invalid key exchange message");
-        }
-        if (msg.size() < 3) {
+        if (msg.size() < 3)
             throw std::runtime_error("Key exchange message too short");
-        }
-        
+
         uint16_t len = (msg[1] << 8) | msg[2];
-        if (msg.size() != 3 + len) {
+        if (msg.size() != 3 + static_cast<size_t>(len))
             throw std::runtime_error("Key exchange length mismatch");
-        }
-        
+
         std::vector<uint8_t> peer_pub(msg.begin() + 3, msg.end());
         shared_secret_ = dh_.compute_shared(peer_pub, rng_);
-        
-        // Append to handshake log for finished message verification
-        handshake_log_.insert(handshake_log_.end(), msg.begin(), msg.end());
+
+        peer_ke_log_ = msg; // store for ordered logging in perform()
     }
 
     void Handshake::derive_keys() {
@@ -201,24 +207,16 @@ namespace secure_channel {
     }
 
     std::vector<uint8_t> Handshake::build_finished() {
-        // Finished message contains hash of all handshake messages
         // Message format: [type (1) = 0x03] [hash (32)]
-        
         std::vector<uint8_t> msg;
         msg.push_back(0x03); // Finished type
-        
-        // Compute hash of all handshake messages so far
+
         Sha256 sha;
         sha.update(handshake_log_);
         auto hash = sha.finish();
-        
-        // Append the hash to the message
         msg.insert(msg.end(), hash.begin(), hash.end());
-        
-        // Note: We don't add finished to handshake_log_ since it contains
-        // a hash of everything BEFORE the finished message
-        
-        return msg;
+
+        return frame(msg);
     }
 
     bool Handshake::verify_finished(const std::vector<uint8_t>& msg) {

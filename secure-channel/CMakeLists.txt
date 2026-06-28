@@ -17,6 +17,9 @@ add_library(secure_channel_core
     src/handshake.cpp
     src/record.cpp
     src/common.cpp
+    src/vault.cpp
+    src/key_manager.cpp
+    src/encryption_engine.cpp
 )
 message(STATUS "MBEDTLS_LIBRARIES: ${MBEDTLS_LIBRARIES}")
 message(STATUS "MBEDTLS_INCLUDE_DIRS: ${MBEDTLS_INCLUDE_DIRS}")
@@ -28,10 +31,10 @@ target_include_directories(secure_channel_core PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
-add_executable(secure_client src/client/main.cpp)
+add_executable(secure_client src/client/main.cpp src/client/client_handlers.cpp)
 target_link_libraries(secure_client secure_channel_core mbedtls mbedcrypto mbedx509)
 
-add_executable(secure_server src/server/main.cpp)
+add_executable(secure_server src/server/main.cpp src/server/server_handlers.cpp)
 target_link_libraries(secure_server secure_channel_core mbedtls mbedcrypto mbedx509)
 
 enable_testing()

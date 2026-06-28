@@ -11,19 +11,22 @@ RecordLayer::RecordLayer(bool is_client, const std::vector<uint8_t>& key)
     }
 
 std::vector<uint8_t> RecordLayer::encrypt(const std::vector<uint8_t>& plaintext) {
-    // Build nonce: first 4 bytes are send_seq in network order, rest zero
     uint8_t nonce[NONCE_SIZE] = {0};
     uint32_t seq_net = hton(send_seq_);
     memcpy(nonce, &seq_net, 4);
 
     auto cipher_and_tag = gcm_.encrypt(plaintext, std::vector<uint8_t>(nonce, nonce + NONCE_SIZE));
 
-    // construct record: [sequence number (4) | nonce (12) ciphertext+tag]
-    std::vector<uint8_t> record;
-    record.resize(4 + NONCE_SIZE + cipher_and_tag.size());
-    memcpy(record.data(), &seq_net, 4);
-    memcpy(record.data() + 4, nonce, NONCE_SIZE);
-    memcpy(record.data() + 4 + NONCE_SIZE, cipher_and_tag.data(), cipher_and_tag.size());
+    // Body: [seq(4)][nonce(12)][ciphertext+tag]
+    uint32_t body_len = 4 + NONCE_SIZE + static_cast<uint32_t>(cipher_and_tag.size());
+    uint32_t body_len_net = hton(body_len);
+
+    // Wire format: [4-byte length][body]
+    std::vector<uint8_t> record(4 + body_len);
+    memcpy(record.data(),                          &body_len_net,         4);
+    memcpy(record.data() + 4,                      &seq_net,              4);
+    memcpy(record.data() + 8,                      nonce,                 NONCE_SIZE);
+    memcpy(record.data() + 8 + NONCE_SIZE,         cipher_and_tag.data(), cipher_and_tag.size());
 
     send_seq_++;
     return record;

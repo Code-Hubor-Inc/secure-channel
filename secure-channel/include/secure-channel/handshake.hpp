@@ -39,6 +39,8 @@ namespace secure_channel {
         std::vector<uint8_t> client_write_key_;
         std::vector<uint8_t> server_write_key_;
 
-        std::vector<uint8_t> handshake_log_; // For finished message
+        std::vector<uint8_t> handshake_log_;
+        std::vector<uint8_t> our_ke_log_;  // our key exchange message (unframed)
+        std::vector<uint8_t> peer_ke_log_; // peer's key exchange message (unframed)
     };
 } // namespace secure_channel

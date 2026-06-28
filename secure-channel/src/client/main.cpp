@@ -2,8 +2,21 @@
 #include "secure-channel/record.hpp"
 #include "secure-channel/network.hpp"
 #include "secure-channel/common.hpp"
+#include "secure-channel/vault.hpp"
 #include <iostream>
 #include <string>
+#include <sstream>
+
+void print_help() {
+    std::cout << "Commands:\n"
+              << "  login <password>\n"
+              << "  set <key> <value>\n"
+              << "  get <key>\n"
+              << "  list\n"
+              << "  delete <key>\n"
+              << "  logout\n"
+              << "  quit\n";
+}
 
 int main() {
     try {
@@ -12,30 +25,74 @@ int main() {
 
         secure_channel::TcpSocket socket;
         socket.connect("127.0.0.1", DEFAULT_PORT);
-        LOG_INFO("Connected complete");
+        LOG_INFO("Connected to server");
 
         handshake.perform(socket);
-        LOG_INFO("Handshake complete");
+        LOG_INFO("Secure channel established");
 
-        auto client_key = handshake.get_client_write_key(); // For sending
-        auto server_key = handshake.get_server_write_key(); // For recieving
+        auto client_key = handshake.get_client_write_key();
+        auto server_key = handshake.get_server_write_key();
         secure_channel::RecordLayer sender(true, client_key);
-        secure_channel::RecordLayer recieve(true, server_key); // same keys because client uses client_write for sending and server_write for recieving
+        secure_channel::RecordLayer receiver(true, server_key);
+
+        secure_channel::VaultClient client(socket, receiver, sender);
 
         std::string line;
-        while (std::getline(std::cin, line)) {
+        print_help();
+        while (std::cout << "> " && std::getline(std::cin, line)) {
             if (line == "quit") break;
+            if (line.empty()) continue;
 
-            // encrypt and send
-            std::vector<uint8_t> plain(line.begin(), line.end());
-            auto record = sender.encrypt(plain);
-            socket.send_all(record);
+            std::stringstream ss(line);
+            std::string cmd;
+            ss >> cmd;
 
-            // Recieve echo
-            auto resp_record = socket.recv_all(record.size());
-            auto resp_plain = recieve.decrypt(resp_record);
-            std::string resp(resp_plain.begin(), resp_plain.end());
-            std::cout << "Echo: " << resp << std::endl;
+            if (cmd == "login") {
+                std::string pwd;
+                ss >> pwd;
+                if (client.login(pwd)) {
+                    std::cout << "Login successful\n";
+                } else {
+                    std::cout << "Login failed\n";
+                }
+            } else if (cmd == "set") {
+                std::string key, val;
+                ss >> key;
+                std::getline(ss >> std::ws, val); // rest of line as value (supports spaces)
+                if (client.set(key, {val.begin(), val.end()})) {
+                    std::cout << "Secret stored\n";
+                } else {
+                    std::cout << "Failed to store secret\n";
+                }
+            } else if (cmd == "get") {
+                std::string key;
+                ss >> key;
+                std::vector<uint8_t> val;
+                if (client.get(key, val)) {
+                    std::cout << "Value: " << std::string(val.begin(), val.end()) << "\n";
+                } else {
+                    std::cout << "Secret not found\n";
+                }
+            } else if (cmd == "list") {
+                auto keys = client.list();
+                std::cout << "Secrets:\n";
+                for (const auto& k : keys) {
+                    std::cout << "  - " << k << "\n";
+                }
+            } else if (cmd == "delete") {
+                std::string key;
+                ss >> key;
+                if (client.del(key)) {
+                    std::cout << "Secret deleted\n";
+                } else {
+                    std::cout << "Secret not found\n";
+                }
+            } else if (cmd == "logout") {
+                client.logout();
+                std::cout << "Logged out\n";
+            } else {
+                print_help();
+            }
         }
 
         socket.close();

@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Vault Dashboard</title>
+    <style>
+        :root {
+            --primary: #00ff41;
+            --bg: #0a0a0a;
+            --surface: #1a1a1a;
+            --text: #e0e0e0;
+            --danger: #ff4444;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .container {
+            background-color: var(--surface);
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            width: 100%;
+            max-width: 600px;
+            border: 1px solid #333;
+        }
+
+        h1 {
+            color: var(--primary);
+            text-align: center;
+            margin-bottom: 2rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            border-bottom: 2px solid var(--primary);
+            padding-bottom: 1rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: var(--primary);
+            font-size: 0.9rem;
+        }
+
+        input {
+            width: 100%;
+            padding: 0.8rem;
+            background: #2a2a2a;
+            border: 1px solid #444;
+            color: white;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        button {
+            width: 100%;
+            padding: 1rem;
+            background-color: transparent;
+            color: var(--primary);
+            border: 2px solid var(--primary);
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            text-transform: uppercase;
+            transition: all 0.3s;
+        }
+
+        button:hover {
+            background-color: var(--primary);
+            color: black;
+        }
+
+        .secret-list {
+            margin-top: 2rem;
+            border-top: 1px solid #333;
+            padding-top: 1rem;
+        }
+
+        .secret-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.8rem;
+            background: #222;
+            margin-bottom: 0.5rem;
+            border-radius: 4px;
+        }
+
+        .status {
+            text-align: center;
+            font-size: 0.8rem;
+            margin-top: 1rem;
+            padding: 0.5rem;
+            border-radius: 4px;
+        }
+
+        .status.error { color: var(--danger); }
+        .status.success { color: var(--primary); }
+
+        #vault-controls { display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Secure Vault</h1>
+        
+        <div id="login-view">
+            <div class="form-group">
+                <label>Master Password</label>
+                <input type="password" id="master-pwd" placeholder="Enter master key...">
+            </div>
+            <button onclick="login()">Access Vault</button>
+        </div>
+
+        <div id="vault-controls">
+            <div class="form-group">
+                <label>New Secret Key</label>
+                <input type="text" id="new-key" placeholder="e.g. gmail_password">
+            </div>
+            <div class="form-group">
+                <label>Secret Value</label>
+                <input type="password" id="new-val" placeholder="Enter sensitive data...">
+            </div>
+            <button onclick="addSecret()">Store Securely</button>
+
+            <div class="secret-list">
+                <label>Stored Secrets</label>
+                <div id="list-container">
+                    <!-- Secrets will be listed here -->
+                </div>
+            </div>
+            
+            <button style="margin-top: 2rem; border-color: #555; color: #888;" onclick="logout()">Lock Vault</button>
+        </div>
+
+        <div id="status-msg" class="status"></div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3000/api';
+        let currentPassword = '';
+
+        function showStatus(msg, isError = false) {
+            const el = document.getElementById('status-msg');
+            el.textContent = msg;
+            el.className = 'status ' + (isError ? 'error' : 'success');
+        }
+
+        async function login() {
+            const pwd = document.getElementById('master-pwd').value;
+            // We'll test with the list command
+            try {
+                const res = await fetch(`${API_URL}/list?password=${pwd}`);
+                const data = await res.json();
+                if (data.success) {
+                    currentPassword = pwd;
+                    document.getElementById('login-view').style.display = 'none';
+                    document.getElementById('vault-controls').style.display = 'block';
+                    showStatus('Access Granted. Secure channel established.');
+                    updateList(data.keys);
+                } else {
+                    showStatus('Access Denied: Invalid Master Key', true);
+                }
+            } catch (err) {
+                showStatus('Connection Error: Is the API Bridge running?', true);
+            }
+        }
+
+        async function addSecret() {
+            const key = document.getElementById('new-key').value;
+            const value = document.getElementById('new-val').value;
+            
+            try {
+                const res = await fetch(`${API_URL}/secrets`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: currentPassword, key, value })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showStatus(`Secret "${key}" stored successfully.`);
+                    refreshList();
+                    document.getElementById('new-key').value = '';
+                    document.getElementById('new-val').value = '';
+                }
+            } catch (err) {
+                showStatus('Failed to store secret.', true);
+            }
+        }
+
+        async function viewSecret(key) {
+            try {
+                const res = await fetch(`${API_URL}/secrets/${key}?password=${currentPassword}`);
+                const data = await res.json();
+                if (data.success) {
+                    alert(`Secret Key: ${key}\nValue: ${data.value}`);
+                }
+            } catch (err) {
+                showStatus('Error retrieving secret.', true);
+            }
+        }
+
+        async function refreshList() {
+            const res = await fetch(`${API_URL}/list?password=${currentPassword}`);
+            const data = await res.json();
+            if (data.success) updateList(data.keys);
+        }
+
+        function updateList(keys) {
+            const container = document.getElementById('list-container');
+            container.innerHTML = '';
+            keys.forEach(key => {
+                const item = document.createElement('div');
+                item.className = 'secret-item';
+                item.innerHTML = `
+                    <span>${key}</span>
+                    <button style="width: auto; padding: 0.4rem 0.8rem; font-size: 0.7rem;" onclick="viewSecret('${key}')">View</button>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        function logout() {
+            currentPassword = '';
+            document.getElementById('login-view').style.display = 'block';
+            document.getElementById('vault-controls').style.display = 'none';
+            document.getElementById('master-pwd').value = '';
+            showStatus('Vault Locked.');
+        }
+    </script>
+</body>
+</html>

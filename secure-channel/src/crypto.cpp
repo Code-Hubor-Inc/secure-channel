@@ -51,8 +51,11 @@ namespace secure_channel {
     //..DhContext..
     DhContext::DhContext() : own_key_generated_(false) {
         mbedtls_dhm_init(&ctx_);
-        // Initialize DHM with RFC 3526 2048-bit parameters
-        // Note: Using raw parameter setup with mbedTLS
+        // Load RFC 3526 2048-bit MODP group parameters
+        if (mbedtls_mpi_read_string(&ctx_.P, 16, MBEDTLS_DHM_RFC3526_MODP_2048_P) != 0 ||
+            mbedtls_mpi_read_string(&ctx_.G, 16, MBEDTLS_DHM_RFC3526_MODP_2048_G) != 0)
+            throw std::runtime_error("Failed to set DH group parameters");
+        ctx_.len = mbedtls_mpi_size(&ctx_.P); // 256 bytes for 2048-bit
     }
 
     DhContext::~DhContext() { mbedtls_dhm_free(&ctx_); }
@@ -76,12 +79,12 @@ namespace secure_channel {
     }
 
     void DhContext::make_public(CtrDrbg& rng) {
-        size_t olen;
-        int ret = mbedtls_dhm_make_public(&ctx_, 
-                                           256,
-                                           nullptr, 
-                                           256,
-                                           mbedtls_ctr_drbg_random, 
+        own_public_.resize(ctx_.len);
+        int ret = mbedtls_dhm_make_public(&ctx_,
+                                           static_cast<int>(ctx_.len),
+                                           own_public_.data(),
+                                           own_public_.size(),
+                                           mbedtls_ctr_drbg_random,
                                            rng.context());
         if (ret != 0) throw std::runtime_error("DH make_public failed");
         own_key_generated_ = true;
@@ -89,24 +92,20 @@ namespace secure_channel {
 
     std::vector<uint8_t> DhContext::get_public() const {
         if (!own_key_generated_) throw std::runtime_error("DH public key not generated");
-        
-        // Return public key - size depends on DH parameters (256 bytes for 2048-bit)
-        std::vector<uint8_t> buf(256);
-        // Note: Proper implementation requires storing public key during make_public()
-        // or using appropriate mbedTLS API to retrieve it
-        
-        return buf;
+        return own_public_;
     }
 
     std::vector<uint8_t> DhContext::compute_shared(const std::vector<uint8_t>& peer_public, CtrDrbg& rng) {
-        // For RFC 3526 2048-bit, the shared secret will be at most 256 bytes
-        std::vector<uint8_t> secret(256);
+        // Import peer's public key into ctx_.GY
+        int ret = mbedtls_dhm_read_public(&ctx_, peer_public.data(), peer_public.size());
+        if (ret != 0) throw std::runtime_error("DH read_public failed");
+
+        std::vector<uint8_t> secret(ctx_.len);
         size_t olen = 0;
-        
-        int ret = mbedtls_dhm_calc_secret(&ctx_, secret.data(), secret.size(), &olen, 
-                                           mbedtls_ctr_drbg_random, rng.context());
+        ret = mbedtls_dhm_calc_secret(&ctx_, secret.data(), secret.size(), &olen,
+                                       mbedtls_ctr_drbg_random, rng.context());
         if (ret != 0) throw std::runtime_error("DH calc_secret failed");
-        
+
         secret.resize(olen);
         return secret;
     }
