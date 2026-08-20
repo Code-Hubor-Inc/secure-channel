@@ -1,0 +1,32 @@
+services:
+  vault:
+    build: .
+    restart: unless-stopped
+    environment:
+      # REQUIRED in any deployment reachable from the internet — the C++ server
+      # falls back to a hardcoded default password otherwise. Set it in a .env
+      # file next to this compose file (see .env.example) or in your shell.
+      - VAULT_PASSWORD=${VAULT_PASSWORD:?set VAULT_PASSWORD before starting}
+    volumes:
+      - vault-data:/data
+    expose:
+      - "3000"
+    # Not published to the host — only Caddy talks to this service.
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - vault
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  vault-data:
+  caddy-data:
+  caddy-config:
