@@ -5,13 +5,17 @@ const cors = require('cors');
 const path = require('path');
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 const COMMAND_TIMEOUT_MS = 8000; // kill subprocess if server doesn't respond in 8s
 
 app.use(cors());
 app.use(bodyParser.json());
+app.use(express.static(__dirname));
 
-const VAULT_CLIENT_PATH = path.join(__dirname, '../secure-channel/build/secure_client');
+// In the container image the binary lives on PATH (/usr/local/bin/secure_client);
+// during local development it's the build output next to this checkout.
+const VAULT_CLIENT_PATH = process.env.VAULT_CLIENT_PATH
+    || path.join(__dirname, '../secure-channel/build/secure_client');
 
 // Extract password from Authorization header: "Basic base64(anything:password)"
 // or plain "Bearer <password>" for simplicity in curl testing.
@@ -35,8 +39,24 @@ function isValidKey(key) {
     return typeof key === 'string' && /^[a-zA-Z0-9_-]+$/.test(key) && key.length <= 128;
 }
 
+// Values are sent as a single line on the vault client's stdin (e.g. "set <key> <value>\n").
+// A newline or carriage return in the value would let a caller inject additional
+// vault protocol commands (login/set/get/delete) into the same session, so those
+// are rejected outright rather than merely length-checked.
 function isValidValue(value) {
-    return typeof value === 'string' && value.length > 0 && value.length <= 4096;
+    return typeof value === 'string'
+        && value.length > 0
+        && value.length <= 4096
+        && !/[\r\n]/.test(value);
+}
+
+// The password is also written as a raw stdin line ("login <password>\n"), so it
+// needs the same newline restriction to prevent command injection into the CLI session.
+function isValidPassword(password) {
+    return typeof password === 'string'
+        && password.length > 0
+        && password.length <= 256
+        && !/[\r\n]/.test(password);
 }
 
 function runVaultCommand(password, commands) {
@@ -82,7 +102,7 @@ function runVaultCommand(password, commands) {
 // Body: { "key": "mykey", "value": "mysecret" }
 app.post('/api/secrets', async (req, res) => {
     const password = getPassword(req);
-    if (!password)
+    if (!isValidPassword(password))
         return res.status(401).json({ success: false, message: 'Authorization header required' });
 
     const { key, value } = req.body;
@@ -109,7 +129,7 @@ app.post('/api/secrets', async (req, res) => {
 // Headers: Authorization: Bearer <password>
 app.get('/api/secrets', async (req, res) => {
     const password = getPassword(req);
-    if (!password)
+    if (!isValidPassword(password))
         return res.status(401).json({ success: false, message: 'Authorization header required' });
 
     try {
@@ -131,7 +151,7 @@ app.get('/api/secrets', async (req, res) => {
 // Headers: Authorization: Bearer <password>
 app.get('/api/secrets/:key', async (req, res) => {
     const password = getPassword(req);
-    if (!password)
+    if (!isValidPassword(password))
         return res.status(401).json({ success: false, message: 'Authorization header required' });
 
     const { key } = req.params;
@@ -157,7 +177,7 @@ app.get('/api/secrets/:key', async (req, res) => {
 // Headers: Authorization: Bearer <password>
 app.delete('/api/secrets/:key', async (req, res) => {
     const password = getPassword(req);
-    if (!password)
+    if (!isValidPassword(password))
         return res.status(401).json({ success: false, message: 'Authorization header required' });
 
     const { key } = req.params;

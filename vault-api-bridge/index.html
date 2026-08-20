@@ -155,7 +155,10 @@
     </div>
 
     <script>
-        const API_URL = 'http://localhost:3000/api';
+        // Same-origin by default (works once this page is served by the bridge itself,
+        // or through a reverse proxy path-routed to it). Override by serving this file
+        // from a different origin than the API and setting API_URL explicitly.
+        const API_URL = '/api';
         let currentPassword = '';
 
         function showStatus(msg, isError = false) {
@@ -164,11 +167,17 @@
             el.className = 'status ' + (isError ? 'error' : 'success');
         }
 
+        function authHeaders() {
+            return { 'Authorization': `Bearer ${currentPassword}` };
+        }
+
         async function login() {
             const pwd = document.getElementById('master-pwd').value;
-            // We'll test with the list command
+            // Probe with the list endpoint — it requires a valid password to succeed.
             try {
-                const res = await fetch(`${API_URL}/list?password=${pwd}`);
+                const res = await fetch(`${API_URL}/secrets`, {
+                    headers: { 'Authorization': `Bearer ${pwd}` }
+                });
                 const data = await res.json();
                 if (data.success) {
                     currentPassword = pwd;
@@ -187,12 +196,12 @@
         async function addSecret() {
             const key = document.getElementById('new-key').value;
             const value = document.getElementById('new-val').value;
-            
+
             try {
                 const res = await fetch(`${API_URL}/secrets`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password: currentPassword, key, value })
+                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                    body: JSON.stringify({ key, value })
                 });
                 const data = await res.json();
                 if (data.success) {
@@ -200,6 +209,8 @@
                     refreshList();
                     document.getElementById('new-key').value = '';
                     document.getElementById('new-val').value = '';
+                } else {
+                    showStatus(data.message || 'Failed to store secret.', true);
                 }
             } catch (err) {
                 showStatus('Failed to store secret.', true);
@@ -208,10 +219,14 @@
 
         async function viewSecret(key) {
             try {
-                const res = await fetch(`${API_URL}/secrets/${key}?password=${currentPassword}`);
+                const res = await fetch(`${API_URL}/secrets/${encodeURIComponent(key)}`, {
+                    headers: authHeaders()
+                });
                 const data = await res.json();
                 if (data.success) {
                     alert(`Secret Key: ${key}\nValue: ${data.value}`);
+                } else {
+                    showStatus(data.message || 'Error retrieving secret.', true);
                 }
             } catch (err) {
                 showStatus('Error retrieving secret.', true);
@@ -219,7 +234,7 @@
         }
 
         async function refreshList() {
-            const res = await fetch(`${API_URL}/list?password=${currentPassword}`);
+            const res = await fetch(`${API_URL}/secrets`, { headers: authHeaders() });
             const data = await res.json();
             if (data.success) updateList(data.keys);
         }

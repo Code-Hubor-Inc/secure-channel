@@ -48,9 +48,13 @@ The server will initialize a `vault.db` file (encrypted) and listen on port 4444
 ./secure_client
 ```
 The client will connect and establish a secure channel. You can then use the following commands:
-- `login <password>`: Authenticate (default: `master_key_123`)
+- `login <password>`: Authenticate (default: `master_key_123`, override with the `VAULT_PASSWORD` env var when starting the server)
 - `set <key> <value>`: Store a secret
 - `get <key>`: Retrieve a secret
 - `list`: List all secret keys
 - `logout`: End the session
 - `quit`: Exit the client
+
+## Deploying online
+
+See the top-level [`../README.md`](../README.md) and [`../docker-compose.yml`](../docker-compose.yml) for a container-based deployment of this server together with the HTTP API bridge, behind an HTTPS reverse proxy. Never run this server on a network-reachable host with the default `master_key_123` password.
