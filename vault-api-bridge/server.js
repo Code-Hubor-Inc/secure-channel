@@ -1,48 +1,26 @@
 const express = require('express');
-const { spawn } = require('child_process');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
+
+const users = require('./lib/users');
+const sessions = require('./lib/sessionStore');
 
 const app = express();
 const port = process.env.PORT || 3000;
-const COMMAND_TIMEOUT_MS = 8000; // kill subprocess if server doesn't respond in 8s
 
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(__dirname));
-
-// In the container image the binary lives on PATH (/usr/local/bin/secure_client);
-// during local development it's the build output next to this checkout.
-const VAULT_CLIENT_PATH = process.env.VAULT_CLIENT_PATH
-    || path.join(__dirname, '../secure-channel/build/secure_client');
-
-// Extract password from Authorization header: "Basic base64(anything:password)"
-// or plain "Bearer <password>" for simplicity in curl testing.
-function getPassword(req) {
-    const auth = req.headers['authorization'];
-    if (!auth) return null;
-
-    if (auth.startsWith('Basic ')) {
-        const decoded = Buffer.from(auth.slice(6), 'base64').toString();
-        const colon = decoded.indexOf(':');
-        return colon !== -1 ? decoded.slice(colon + 1) : decoded;
-    }
-    if (auth.startsWith('Bearer ')) {
-        return auth.slice(7);
-    }
-    return null;
-}
 
 // Keys must be alphanumeric + hyphens/underscores only — no spaces or shell metacharacters.
 function isValidKey(key) {
     return typeof key === 'string' && /^[a-zA-Z0-9_-]+$/.test(key) && key.length <= 128;
 }
 
-// Values are sent as a single line on the vault client's stdin (e.g. "set <key> <value>\n").
-// A newline or carriage return in the value would let a caller inject additional
-// vault protocol commands (login/set/get/delete) into the same session, so those
-// are rejected outright rather than merely length-checked.
+// Values are sent as a single line on the vault client's stdin ("set <key> <value>\n"),
+// so a newline would let a caller inject extra vault commands into the session.
 function isValidValue(value) {
     return typeof value === 'string'
         && value.length > 0
@@ -50,61 +28,48 @@ function isValidValue(value) {
         && !/[\r\n]/.test(value);
 }
 
-// The password is also written as a raw stdin line ("login <password>\n"), so it
-// needs the same newline restriction to prevent command injection into the CLI session.
-function isValidPassword(password) {
-    return typeof password === 'string'
-        && password.length > 0
-        && password.length <= 256
-        && !/[\r\n]/.test(password);
+function auditLog(username, action, detail) {
+    const line = `${new Date().toISOString()} user=${username} action=${action} ${detail}\n`;
+    fs.appendFile('bridge-audit.log', line, () => {}); // cwd is /data (set by WORKDIR)
 }
 
-function runVaultCommand(password, commands) {
-    return new Promise((resolve, reject) => {
-        const client = spawn(VAULT_CLIENT_PATH);
-        let output = '';
-        let errorOutput = '';
-        let timedOut = false;
-
-        const timer = setTimeout(() => {
-            timedOut = true;
-            client.kill();
-            reject(new Error('Vault server did not respond in time'));
-        }, COMMAND_TIMEOUT_MS);
-
-        client.stdout.on('data', (data) => { output += data.toString(); });
-        client.stderr.on('data', (data) => { errorOutput += data.toString(); });
-
-        client.on('close', (code) => {
-            clearTimeout(timer);
-            if (timedOut) return;
-            if (code !== 0) {
-                reject(new Error(`Client exited with code ${code}: ${errorOutput}`));
-            } else {
-                resolve(output);
-            }
-        });
-
-        client.on('error', (err) => {
-            clearTimeout(timer);
-            reject(new Error(`Failed to spawn vault client: ${err.message}`));
-        });
-
-        client.stdin.write(`login ${password}\n`);
-        commands.forEach(cmd => { client.stdin.write(cmd + '\n'); });
-        client.stdin.write('quit\n');
-        client.stdin.end();
-    });
+function requireSession(req, res, next) {
+    const auth = req.headers['authorization'];
+    const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    const session = token && sessions.get(token);
+    if (!session) return res.status(401).json({ success: false, message: 'Invalid or expired session' });
+    req.token = token;
+    req.vaultSession = session;
+    next();
 }
+
+// POST /api/login
+// Body: { "username": "...", "password": "..." }
+app.post('/api/login', async (req, res) => {
+    const { username, password } = req.body;
+    if (!(await users.verify(username, password)))
+        return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    try {
+        const token = await sessions.create(username);
+        auditLog(username, 'LOGIN', '');
+        res.json({ success: true, token });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// POST /api/logout
+// Headers: Authorization: Bearer <token>
+app.post('/api/logout', requireSession, (req, res) => {
+    sessions.destroy(req.token);
+    auditLog(req.vaultSession.username, 'LOGOUT', '');
+    res.json({ success: true });
+});
 
 // POST /api/secrets
-// Headers: Authorization: Bearer <password>  (or Basic base64(:password))
+// Headers: Authorization: Bearer <token>
 // Body: { "key": "mykey", "value": "mysecret" }
-app.post('/api/secrets', async (req, res) => {
-    const password = getPassword(req);
-    if (!isValidPassword(password))
-        return res.status(401).json({ success: false, message: 'Authorization header required' });
-
+app.post('/api/secrets', requireSession, async (req, res) => {
     const { key, value } = req.body;
     if (!isValidKey(key))
         return res.status(400).json({ success: false, message: 'Invalid key — use alphanumeric, hyphens, underscores only' });
@@ -112,10 +77,8 @@ app.post('/api/secrets', async (req, res) => {
         return res.status(400).json({ success: false, message: 'Value is required and must be under 4096 bytes' });
 
     try {
-        const result = await runVaultCommand(password, [`set ${key} ${value}`]);
-        if (result.includes('Login failed')) {
-            return res.status(401).json({ success: false, message: 'Invalid password' });
-        }
+        const result = await req.vaultSession.vault.send(`set ${key} ${value}`);
+        auditLog(req.vaultSession.username, 'SET', `key=${key}`);
         if (result.includes('Secret stored')) {
             return res.json({ success: true, message: 'Secret stored securely' });
         }
@@ -126,21 +89,15 @@ app.post('/api/secrets', async (req, res) => {
 });
 
 // GET /api/secrets
-// Headers: Authorization: Bearer <password>
-app.get('/api/secrets', async (req, res) => {
-    const password = getPassword(req);
-    if (!isValidPassword(password))
-        return res.status(401).json({ success: false, message: 'Authorization header required' });
-
+// Headers: Authorization: Bearer <token>
+app.get('/api/secrets', requireSession, async (req, res) => {
     try {
-        const result = await runVaultCommand(password, ['list']);
-        if (result.includes('Login failed')) {
-            return res.status(401).json({ success: false, message: 'Invalid password' });
-        }
+        const result = await req.vaultSession.vault.send('list');
         const keys = result
             .split('\n')
             .filter(line => line.trim().startsWith('-'))
             .map(line => line.trim().substring(2).trim());
+        auditLog(req.vaultSession.username, 'LIST', '');
         res.json({ success: true, keys });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
@@ -148,21 +105,15 @@ app.get('/api/secrets', async (req, res) => {
 });
 
 // GET /api/secrets/:key
-// Headers: Authorization: Bearer <password>
-app.get('/api/secrets/:key', async (req, res) => {
-    const password = getPassword(req);
-    if (!isValidPassword(password))
-        return res.status(401).json({ success: false, message: 'Authorization header required' });
-
+// Headers: Authorization: Bearer <token>
+app.get('/api/secrets/:key', requireSession, async (req, res) => {
     const { key } = req.params;
     if (!isValidKey(key))
         return res.status(400).json({ success: false, message: 'Invalid key format' });
 
     try {
-        const result = await runVaultCommand(password, [`get ${key}`]);
-        if (result.includes('Login failed')) {
-            return res.status(401).json({ success: false, message: 'Invalid password' });
-        }
+        const result = await req.vaultSession.vault.send(`get ${key}`);
+        auditLog(req.vaultSession.username, 'GET', `key=${key}`);
         const match = result.match(/Value: (.*)/);
         if (match) {
             return res.json({ success: true, key, value: match[1].trim() });
@@ -174,21 +125,15 @@ app.get('/api/secrets/:key', async (req, res) => {
 });
 
 // DELETE /api/secrets/:key
-// Headers: Authorization: Bearer <password>
-app.delete('/api/secrets/:key', async (req, res) => {
-    const password = getPassword(req);
-    if (!isValidPassword(password))
-        return res.status(401).json({ success: false, message: 'Authorization header required' });
-
+// Headers: Authorization: Bearer <token>
+app.delete('/api/secrets/:key', requireSession, async (req, res) => {
     const { key } = req.params;
     if (!isValidKey(key))
         return res.status(400).json({ success: false, message: 'Invalid key format' });
 
     try {
-        const result = await runVaultCommand(password, [`delete ${key}`]);
-        if (result.includes('Login failed')) {
-            return res.status(401).json({ success: false, message: 'Invalid password' });
-        }
+        const result = await req.vaultSession.vault.send(`delete ${key}`);
+        auditLog(req.vaultSession.username, 'DELETE', `key=${key}`);
         if (result.includes('Secret deleted')) {
             return res.json({ success: true, message: 'Secret deleted' });
         }
@@ -201,9 +146,11 @@ app.delete('/api/secrets/:key', async (req, res) => {
 app.listen(port, () => {
     console.log(`Vault API Bridge listening at http://localhost:${port}`);
     console.log('');
-    console.log('Endpoints (all require: Authorization: Bearer <password>)');
-    console.log('  POST   /api/secrets          body: { key, value }');
-    console.log('  GET    /api/secrets           list all keys');
-    console.log('  GET    /api/secrets/:key      retrieve a secret');
-    console.log('  DELETE /api/secrets/:key      delete a secret');
+    console.log('Endpoints');
+    console.log('  POST   /api/login             body: { username, password } -> { token }');
+    console.log('  POST   /api/logout             Authorization: Bearer <token>');
+    console.log('  POST   /api/secrets            Authorization: Bearer <token>  body: { key, value }');
+    console.log('  GET    /api/secrets            Authorization: Bearer <token>  list all keys');
+    console.log('  GET    /api/secrets/:key       Authorization: Bearer <token>  retrieve a secret');
+    console.log('  DELETE /api/secrets/:key       Authorization: Bearer <token>  delete a secret');
 });

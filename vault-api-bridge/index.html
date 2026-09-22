@@ -124,8 +124,12 @@
         
         <div id="login-view">
             <div class="form-group">
-                <label>Master Password</label>
-                <input type="password" id="master-pwd" placeholder="Enter master key...">
+                <label>Username</label>
+                <input type="text" id="username" placeholder="Enter your username...">
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="master-pwd" placeholder="Enter your password...">
             </div>
             <button onclick="login()">Access Vault</button>
         </div>
@@ -159,7 +163,7 @@
         // or through a reverse proxy path-routed to it). Override by serving this file
         // from a different origin than the API and setting API_URL explicitly.
         const API_URL = '/api';
-        let currentPassword = '';
+        let currentToken = null;
 
         function showStatus(msg, isError = false) {
             const el = document.getElementById('status-msg');
@@ -168,25 +172,27 @@
         }
 
         function authHeaders() {
-            return { 'Authorization': `Bearer ${currentPassword}` };
+            return { 'Authorization': `Bearer ${currentToken}` };
         }
 
         async function login() {
+            const username = document.getElementById('username').value;
             const pwd = document.getElementById('master-pwd').value;
-            // Probe with the list endpoint — it requires a valid password to succeed.
             try {
-                const res = await fetch(`${API_URL}/secrets`, {
-                    headers: { 'Authorization': `Bearer ${pwd}` }
+                const res = await fetch(`${API_URL}/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password: pwd })
                 });
                 const data = await res.json();
                 if (data.success) {
-                    currentPassword = pwd;
+                    currentToken = data.token;
                     document.getElementById('login-view').style.display = 'none';
                     document.getElementById('vault-controls').style.display = 'block';
-                    showStatus('Access Granted. Secure channel established.');
-                    updateList(data.keys);
+                    showStatus('Access Granted.');
+                    refreshList();
                 } else {
-                    showStatus('Access Denied: Invalid Master Key', true);
+                    showStatus(data.message || 'Access Denied', true);
                 }
             } catch (err) {
                 showStatus('Connection Error: Is the API Bridge running?', true);
@@ -254,7 +260,10 @@
         }
 
         function logout() {
-            currentPassword = '';
+            if (currentToken) {
+                fetch(`${API_URL}/logout`, { method: 'POST', headers: authHeaders() });
+            }
+            currentToken = null;
             document.getElementById('login-view').style.display = 'block';
             document.getElementById('vault-controls').style.display = 'none';
             document.getElementById('master-pwd').value = '';

@@ -1,2 +1,4 @@
 .env
 node_modules/
+vault-api-bridge/users.json
+vault-api-bridge/bridge-audit.log

@@ -26,7 +26,8 @@ COPY --from=cpp-build /src/secure-channel/build/secure_client /usr/local/bin/sec
 WORKDIR /app
 COPY vault-api-bridge/package.json vault-api-bridge/package-lock.json ./
 RUN npm ci --omit=dev
-COPY vault-api-bridge/server.js vault-api-bridge/index.html ./
+COPY vault-api-bridge/server.js vault-api-bridge/index.html vault-api-bridge/create-user.js ./
+COPY vault-api-bridge/lib ./lib
 COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
