@@ -5,8 +5,20 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(MBEDTLS REQUIRED mbedtls)
+# Locate mbedTLS via find_library/find_path instead of pkg-config: Debian's
+# libmbedtls-dev package doesn't ship a mbedtls.pc file (unlike Ubuntu's),
+# so pkg_check_modules(mbedtls) fails there even though the library and
+# headers are installed and perfectly usable.
+find_path(MBEDTLS_INCLUDE_DIRS mbedtls/ssl.h)
+find_library(MBEDTLS_LIB mbedtls)
+find_library(MBEDCRYPTO_LIB mbedcrypto)
+find_library(MBEDX509_LIB mbedx509)
+
+if(NOT MBEDTLS_INCLUDE_DIRS OR NOT MBEDTLS_LIB OR NOT MBEDCRYPTO_LIB OR NOT MBEDX509_LIB)
+    message(FATAL_ERROR "mbedTLS not found (install libmbedtls-dev)")
+endif()
+
+set(MBEDTLS_LIBRARIES ${MBEDTLS_LIB} ${MBEDX509_LIB} ${MBEDCRYPTO_LIB})
 
 include_directories(include)
 include_directories(${MBEDTLS_INCLUDE_DIRS})
