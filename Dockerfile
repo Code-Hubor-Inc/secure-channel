@@ -17,8 +17,7 @@ FROM node:20-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libmbedtls14 libmbedcrypto7 libmbedx509-1 tini bash \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd -m -u 10001 vault
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=cpp-build /src/secure-channel/build/secure_server /usr/local/bin/secure_server
 COPY --from=cpp-build /src/secure-channel/build/secure_client /usr/local/bin/secure_client
@@ -34,8 +33,10 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 ENV VAULT_CLIENT_PATH=/usr/local/bin/secure_client
 ENV PORT=3000
 
-RUN mkdir -p /data && chown vault:vault /data /app
-USER vault
+# Runs as root: Railway (and most PaaS volume mounts) mount a fresh volume
+# at /data owned by root at container start, overriding any chown baked
+# into the image, so a non-root user here can't reliably write to it.
+RUN mkdir -p /data
 WORKDIR /data
 
 EXPOSE 3000
